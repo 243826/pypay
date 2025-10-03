@@ -9,6 +9,7 @@ pypay is a Python-based payroll data processing tool that parses PDF paystubs an
 ## Development Setup
 
 ### Environment Setup
+
 The project uses pyenv for Python version management:
 
 ```bash
@@ -33,17 +34,20 @@ pyenv exec pip install -r requirements.txt
 The application has three main commands:
 
 **Initialize a new GnuCash file with all accounts:**
+
 ```bash
 pyenv exec python load.py init my_finances.gnucash
 ```
 
 **Preprocess PDF files to extract JSON data:**
+
 ```bash
 pyenv exec python load.py preprocess data/paystubs           # Process all PDFs in directory
 pyenv exec python load.py preprocess data/paystubs/file.pdf  # Process single PDF
 ```
 
 **Load JSON transactions into GnuCash:**
+
 ```bash
 pyenv exec python load.py load my_finances.gnucash data/paystubs  # Load all JSON files
 pyenv exec python load.py load my_finances.gnucash file.json      # Load single JSON file
@@ -54,6 +58,7 @@ pyenv exec python load.py load my_finances.gnucash file.json      # Load single 
 ### Main Components
 
 **load.py** - Single-file application containing:
+
 - PDF parsing logic using pdfplumber
 - JSON data extraction and transformation
 - GnuCash transaction creation using piecash library
@@ -62,16 +67,19 @@ pyenv exec python load.py load my_finances.gnucash file.json      # Load single 
 ### Data Flow
 
 1. **PDF Parsing** (`parse_file`, `parse_table`, `parse_row`, `parse_cell`)
+
    - Extracts tables from PDF paystubs (specifically Table 4 on each page)
    - Parses amounts (handling trailing minus signs), descriptions, and YTD values
    - Outputs structured JSON data
 
 2. **Account Mapping** (`ACCOUNTS` dictionary)
+
    - Maps 80+ paystub line items to GnuCash account hierarchies
    - Defines account types: Asset, Income, Expense
    - Specifies custom processing functions for complex items
 
 3. **Transaction Processing** (`process` function)
+
    - Groups splits by transaction type (earnings, invisible, match401k, matchrestor)
    - Applies deferred functions for complex multi-split transactions
    - Creates balanced double-entry transactions
@@ -86,6 +94,7 @@ pyenv exec python load.py load my_finances.gnucash file.json      # Load single 
 **Deferred Function Pattern**: Some account entries (DRSU, stock taxes, 401k matches) return functions that execute after initial splits are created. This allows calculating dependent values (e.g., stock taxes based on total taxable RSU).
 
 **Split Groups**: Transactions are organized into logical groups:
+
 - `earnings`: Main paycheck splits
 - `invisible`: Imputed income that doesn't affect net pay
 - `match401k`: Employer 401(k) contributions
@@ -96,6 +105,7 @@ pyenv exec python load.py load my_finances.gnucash file.json      # Load single 
 ### Account Hierarchy
 
 The system creates a three-tier structure:
+
 - **Asset**: Bank accounts, retirement (401k, DCP), stocks (RSU, DRSU, ESPP), FSA
 - **Income**: Taxable (salary, bonus, RSU, ESPP) and Non-Taxable (401k match, benefits)
 - **Expense**: Taxes (federal, state, FICA, Medicare, stock), insurance, pretax deductions
@@ -121,7 +131,8 @@ Dates are extracted from filenames with pattern: `*_YYYY-MM-DD*.pdf` → `parse_
 ## Testing
 
 No formal test suite exists. Manual testing workflow:
-1. Parse PDF: `python load.py data/paystubs/example.pdf`
+
+1. Parse PDF: `python load.py data/2024/example.pdf`
 2. Verify JSON output
 3. Check GnuCash database for correct transactions
 4. Validate double-entry balance (sum of splits = 0)

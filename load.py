@@ -139,19 +139,19 @@ def total_net_pay(splits_groups, properties, value, desc, data, registry):
 # Centralized registry of all account paths used in the system
 ACCOUNT_PATHS = {
     # Asset accounts
-    'ASSET_401K_PRETAX_ELECTIVE': 'Asset:401k:PreTax:Elective',
-    'ASSET_401K_PRETAX_EMPLOYER': 'Asset:401k:PreTax:Employer',
-    'ASSET_401K_AFTERTAX': 'Asset:401k:AfterTax',
-    'ASSET_DCP_BONUS': 'Asset:DCP:Bonus',
-    'ASSET_DCP_REGULAR': 'Asset:DCP:Regular',
-    'ASSET_DCP_RESTOR': 'Asset:DCP:Restor',
-    'ASSET_FSA_DC': 'Asset:FSA:DC',
-    'ASSET_FSA_HEALTH': 'Asset:FSA:Health',
-    'ASSET_STOCKS_ESPP': 'Asset:Stocks:ESPP',
-    'ASSET_STOCKS_RSU': 'Asset:Stocks:RSU',
-    'ASSET_STOCKS_DRSU': 'Asset:Stocks:DRSU',
-    'ASSET_BANK_CHECKING': 'Asset:Bank:Checking',
-    'ASSET_RECEIVABLES_PTO': 'Asset:Receivables:PTO',
+    'ASSET_401K_PRETAX_ELECTIVE': 'Assets:401k:PreTax:Elective',
+    'ASSET_401K_PRETAX_EMPLOYER': 'Assets:401k:PreTax:Employer',
+    'ASSET_401K_AFTERTAX': 'Assets:401k:AfterTax',
+    'ASSET_DCP_BONUS': 'Assets:DCP:Bonus',
+    'ASSET_DCP_REGULAR': 'Assets:DCP:Regular',
+    'ASSET_DCP_RESTOR': 'Assets:DCP:Restor',
+    'ASSET_FSA_DC': 'Assets:FSA:DC',
+    'ASSET_FSA_HEALTH': 'Assets:FSA:Health',
+    'ASSET_STOCKS_ESPP': 'Assets:Stocks:ESPP',
+    'ASSET_STOCKS_RSU': 'Assets:Stocks:RSU',
+    'ASSET_STOCKS_DRSU': 'Assets:Stocks:DRSU',
+    'ASSET_BANK_CHECKING': 'Assets:Bank:Checking',
+    'ASSET_RECEIVABLES_PTO': 'Assets:Receivables:PTO',
 
     # Income accounts
     'INCOME_TAXABLE_REGULAR': 'Income:Taxable:Regular',
@@ -169,19 +169,19 @@ ACCOUNT_PATHS = {
     'INCOME_NONTAXABLE_MISC': 'Income:NonTaxable:Misc',
 
     # Expense accounts
-    'EXPENSE_PRETAX_DENTAL': 'Expense:Pretax:Dental',
-    'EXPENSE_PRETAX_MEDICAL': 'Expense:Pretax:Medical',
-    'EXPENSE_PRETAX_VISION': 'Expense:Pretax:Vision',
-    'EXPENSE_AFTERTAX_INSURANCE_LIFE': 'Expense:Aftertax:Insurance:Life',
-    'EXPENSE_AFTERTAX_INSURANCE_ILLNESS': 'Expense:Aftertax:Insurance:Illness',
-    'EXPENSE_AFTERTAX_INSURANCE_LEGAL': 'Expense:Aftertax:Insurance:Legal',
-    'EXPENSE_AFTERTAX_MISC': 'Expense:Aftertax:Misc',
-    'EXPENSE_TAXES_FEDERAL': 'Expense:Taxes:Federal',
-    'EXPENSE_TAXES_STATE': 'Expense:Taxes:State',
-    'EXPENSE_TAXES_CALIFORNIA': 'Expense:Taxes:California',
-    'EXPENSE_TAXES_FICA': 'Expense:Taxes:FICA',
-    'EXPENSE_TAXES_MEDICARE': 'Expense:Taxes:Medicare',
-    'EXPENSE_TAXES_STOCK': 'Expense:Taxes:Stock',
+    'EXPENSE_PRETAX_DENTAL': 'Expenses:Pretax:Dental',
+    'EXPENSE_PRETAX_MEDICAL': 'Expenses:Pretax:Medical',
+    'EXPENSE_PRETAX_VISION': 'Expenses:Pretax:Vision',
+    'EXPENSE_AFTERTAX_INSURANCE_LIFE': 'Expenses:Aftertax:Insurance:Life',
+    'EXPENSE_AFTERTAX_INSURANCE_ILLNESS': 'Expenses:Aftertax:Insurance:Illness',
+    'EXPENSE_AFTERTAX_INSURANCE_LEGAL': 'Expenses:Aftertax:Insurance:Legal',
+    'EXPENSE_AFTERTAX_MISC': 'Expenses:Aftertax:Misc',
+    'EXPENSE_TAXES_FEDERAL': 'Expenses:Taxes:Federal',
+    'EXPENSE_TAXES_STATE': 'Expenses:Taxes:State',
+    'EXPENSE_TAXES_CALIFORNIA': 'Expenses:Taxes:California',
+    'EXPENSE_TAXES_FICA': 'Expenses:Taxes:FICA',
+    'EXPENSE_TAXES_MEDICARE': 'Expenses:Taxes:Medicare',
+    'EXPENSE_TAXES_STOCK': 'Expenses:Taxes:Stock',
 
     # Equity accounts
     'EQUITY_INVISIBLE': 'Equity:Invisible',
@@ -533,6 +533,18 @@ def parse_table(table):
 
     return data
 
+def is_earnings_table(table):
+    """Check if table contains earnings data by examining header"""
+    if not table or len(table) < 1:
+        return False
+
+    header_row = table[0]
+    header_text = ' '.join(str(cell) if cell else '' for cell in header_row)
+
+    # Earnings table should have these keywords in header
+    return ('Earnings' in header_text or 'Deductions' in header_text or
+            'Rate' in header_text or 'Hours/Units' in header_text)
+
 def parse_file(file_path):
     all_data = []
     pdf = pdfplumber.open(file_path)
@@ -543,9 +555,7 @@ def parse_file(file_path):
         })
         if tables:
             for table in tables:
-                table_num = tables.index(table) + 1
-                if table_num == 4:
-                    # print(f"File: {file_path}, Page: {p.page_number}, Table number: {table_num}")
+                if is_earnings_table(table):
                     all_data += parse_table(table)
 
     return all_data
@@ -596,13 +606,18 @@ def process(file_path, book, registry):
         piecash.Transaction(post_date=date, splits=splits, currency=currency)
 
 
-
-
 def create_gnucash_accounts(gnucash_file):
     """Create a new GnuCash file with all accounts but no transactions"""
-    book = piecash.create_book(gnucash_file, currency="USD", overwrite=True)
-    try:
-        USD = book.commodities.get(namespace="CURRENCY", mnemonic="USD")
+    with piecash.create_book(gnucash_file, currency="USD", overwrite=True) as book:
+        USD = book.commodities.get(mnemonic="USD")
+
+        # Add GnuCash features metadata (required for GnuCash GUI to recognize the file)
+        book['features'] = {
+            'ISO-8601 formatted date strings in SQLite3 databases.': 'Use ISO formatted date-time strings in SQLite3 databases (requires at least GnuCash 2.6.20)',
+            'Register sort and filter settings stored in .gcm file': 'Store the register sort and filter settings in .gcm metadata file (requires at least GnuCash 3.3)',
+            "Use a dedicated opening balance account identified by an 'equity-type' slot": "Use a dedicated opening balance account identified by an 'equity-type' slot (requires at least Gnucash 4.3)"
+        }
+        book['remove-color-not-set-slots'] = True
 
         # Root accounts are automatically created, just fetch them
         created_accounts_map = {}
@@ -614,9 +629,9 @@ def create_gnucash_accounts(gnucash_file):
         account_paths = sorted(account_paths)
 
         types_map = {
-            "Asset": "ASSET",
+            "Assets": "ASSET",
             "Income": "INCOME",
-            "Expense": "EXPENSE",
+            "Expenses": "EXPENSE",
             "Equity": "EQUITY",
             "Bank": "BANK"
         }
@@ -638,7 +653,7 @@ def create_gnucash_accounts(gnucash_file):
                         parent = created_accounts_map[parent_path]
 
                     is_placeholder = (i < len(elements) - 1)
-                    print(f"Creating account: {name} ({partial_path})")
+                    print(f"Creating account: {name} ({parent} -> {partial_path})")
                     created_accounts_map[partial_path] = piecash.Account(
                         name=name,
                         type=account_type,
@@ -647,11 +662,8 @@ def create_gnucash_accounts(gnucash_file):
                         placeholder=is_placeholder
                     )
 
+        book.flush()
         book.save()
-    except Exception as e:
-        print(f"Failed to create GnuCash file: {e}")
-    finally:
-        book.close()
         print(f"Created GnuCash file: {gnucash_file}")
 
 def main():
