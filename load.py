@@ -302,11 +302,6 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['ASSET_FSA_HEALTH'],
         'desc': 'FSA',
     },
-    'FloatHol 0.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_FLOAT_HOL'],
-        'desc': 'FloatHol',
-    },
-    'FloatHol 8.00': {},
     'Floating Holiday 136.93 8.00': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_FLOATING_HOLIDAY'],
         'desc': 'Floating Holiday 136.93 8.00',
@@ -459,9 +454,14 @@ SEARCH_ACCOUNTS = [
         'account': ACCOUNT_PATHS['ASSET_RECEIVABLES_PTO'],
         'desc': 'PTO 252.24',
         'function': print_value
+    },
+    {
+        'pattern': r"^FloatHol \d+\.\d+",
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_FLOAT_HOL'],
+        'desc': 'Floating Holiday Balance',
+        'function': print_value
     }
 ]
-    
 
 
 def parse_amount(text):
@@ -533,6 +533,45 @@ def parse_table(table):
 
     return data
 
+def detect_column_boundaries(words):
+    """
+    Detect Amount and YTD column boundaries from header words.
+
+    Args:
+        words: List of word dictionaries with 'text', 'x0', 'top' fields
+
+    Returns:
+        dict with 'amount_col' and 'ytd_col' x-coordinates, or None if not found
+    """
+    # Find header row with "Earnings" keyword
+    for i, word in enumerate(words):
+        if 'Earnings' in word['text']:
+            # Collect all words on same line (within 2 pixels vertically)
+            header_words = [word]
+            for j in range(i + 1, min(i + 15, len(words))):
+                if abs(words[j]['top'] - word['top']) < 2:
+                    header_words.append(words[j])
+                elif words[j]['top'] > word['top'] + 2:
+                    break
+
+            # Find Amount and Year-To-Date column positions
+            amount_col = None
+            ytd_col = None
+
+            for hw in header_words:
+                if 'Amount' in hw['text']:
+                    amount_col = hw['x0']
+                elif 'Year' in hw['text'] or 'Year-To-Date' in hw['text']:
+                    ytd_col = hw['x0']
+
+            if amount_col and ytd_col:
+                return {
+                    'amount_col': amount_col,
+                    'ytd_col': ytd_col
+                }
+
+    return None
+
 def is_earnings_table(table):
     """Check if table contains earnings data by examining header"""
     if not table or len(table) < 1:
@@ -545,18 +584,263 @@ def is_earnings_table(table):
     return ('Earnings' in header_text or 'Deductions' in header_text or
             'Rate' in header_text or 'Hours/Units' in header_text)
 
+def group_words_by_row(words, start_idx, end_idx):
+    """
+    Group words into rows based on Y-coordinate proximity.
+
+    Args:
+        words: List of word dictionaries
+        start_idx: Starting index in words list
+        end_idx: Ending index in words list
+
+    Returns:
+        List of rows, where each row is a list of words
+    """
+    if start_idx >= end_idx:
+        return []
+
+    rows = []
+    current_row = [words[start_idx]]
+    current_y = words[start_idx]['top']
+
+    for i in range(start_idx + 1, end_idx):
+        word = words[i]
+        # If word is on same line (within 2 pixels), add to current row
+        if abs(word['top'] - current_y) < 2:
+            current_row.append(word)
+        else:
+            # New row
+            rows.append(current_row)
+            current_row = [word]
+            current_y = word['top']
+
+    # Add last row
+    if current_row:
+        rows.append(current_row)
+
+    return rows
+
+def parse_row_with_positions(row_words, column_bounds):
+    """
+    Parse a row of words using position information to classify values.
+
+    Args:
+        row_words: List of word dictionaries on same row
+        column_bounds: Dict with 'amount_col' and 'ytd_col' positions
+
+    Returns:
+        Dict with 'desc', 'cur', and/or 'ytd' fields
+    """
+    amount_col = column_bounds['amount_col']
+    ytd_col = column_bounds['ytd_col']
+
+    # Define boundaries for main earnings table (left side only)
+    # "Other Benefits and Information" section starts around x=350
+    MAIN_TABLE_RIGHT_EDGE = 320
+
+    # Separate description (leftmost words) from numeric values
+    description_words = []
+    cur_value = None
+    ytd_value = None
+
+    for word in row_words:
+        text = word['text']
+        x = word['x0']
+
+        # Skip words from "Other Benefits" section (right side)
+        if x > MAIN_TABLE_RIGHT_EDGE:
+            continue
+
+        # Check if it's a numeric value (accounting format with optional trailing -)
+        if is_amount(text):
+            # Classify by position within main table
+            if amount_col - 20 <= x < ytd_col:  # In Amount column
+                cur_value = text
+            elif ytd_col <= x <= MAIN_TABLE_RIGHT_EDGE:  # In YTD column
+                ytd_value = text
+        else:
+            # Description text (should be on left side)
+            if x < amount_col - 20:  # Well before amount column
+                description_words.append(text)
+
+    # Build result
+    result = {}
+    if description_words:
+        result['desc'] = ' '.join(description_words)
+
+    if cur_value:
+        result['cur'] = cur_value
+    if ytd_value:
+        result['ytd'] = ytd_value
+
+    return result if result else None
+
+def parse_other_benefits_table(words, start_idx, end_idx):
+    """
+    Parse the 'Other Benefits and Information' table on the right side.
+
+    Args:
+        words: List of word dictionaries
+        start_idx: Starting index
+        end_idx: Ending index
+
+    Returns:
+        List of parsed row dictionaries
+    """
+    # Column boundaries for Other Benefits table
+    # Based on analysis: Description (350-430), This Period (430-495), Year-to-Date (495-560)
+    OTHER_TABLE_LEFT = 320
+    THIS_PERIOD_COL = 430
+    YTD_COL = 495
+
+    # Quota Summary has different columns: Earned (438-486), Used (486-520), Balance (520-560)
+    QUOTA_EARNED_COL = 438
+    QUOTA_USED_COL = 486
+    QUOTA_BALANCE_COL = 520
+
+    # Group words into rows
+    rows = group_words_by_row(words, start_idx, end_idx)
+    parsed_data = []
+    in_quota_summary = False
+
+    for row_words in rows:
+        # Filter to only words in Other Benefits table area
+        other_words = [w for w in row_words if w['x0'] > OTHER_TABLE_LEFT]
+        if not other_words:
+            continue
+
+        # Check if this is Quota Summary header
+        desc_text = ' '.join([w['text'] for w in other_words if w['x0'] < THIS_PERIOD_COL])
+        if 'Quota Summary' in desc_text:
+            in_quota_summary = True
+            continue
+        elif 'Payment Method' in desc_text or 'Excluded from' in desc_text:
+            in_quota_summary = False
+            continue
+
+        # Separate description from values
+        description_words = []
+        numeric_values = []  # Collect all numeric values with their positions
+
+        for word in other_words:
+            text = word['text']
+            x = word['x0']
+
+            # Check if numeric value
+            if is_amount(text):
+                numeric_values.append((x, text))
+            else:
+                # Description text (left side)
+                if x < THIS_PERIOD_COL:
+                    description_words.append(text)
+
+        # Build result
+        if description_words:
+            result = {'desc': ' '.join(description_words)}
+
+            if in_quota_summary:
+                # For quota summary: always expect 3 values (earned, used, balance)
+                # Sort by x position and assign in order
+                numeric_values.sort(key=lambda v: v[0])
+
+                if len(numeric_values) >= 1:
+                    result['earned'] = numeric_values[0][1]
+                if len(numeric_values) >= 2:
+                    result['used'] = numeric_values[1][1]
+                if len(numeric_values) >= 3:
+                    result['balance'] = numeric_values[2][1]
+            else:
+                # For regular items: cur, ytd (2 values max)
+                numeric_values.sort(key=lambda v: v[0])
+
+                if len(numeric_values) >= 1:
+                    # Determine if first value is cur or ytd based on position
+                    if numeric_values[0][0] < YTD_COL:
+                        result['cur'] = numeric_values[0][1]
+                    else:
+                        result['ytd'] = numeric_values[0][1]
+
+                if len(numeric_values) >= 2:
+                    result['ytd'] = numeric_values[1][1]
+
+            # Skip header rows and separators
+            desc = result['desc']
+            if not any(skip in desc for skip in ['Other Benefits', 'This Period', 'Year-to-Date',
+                                                   '---', 'Payment Method', 'Excluded from']):
+                parsed_data.append(result)
+
+    return parsed_data
+
 def parse_file(file_path):
     all_data = []
     pdf = pdfplumber.open(file_path)
+
     for p in pdf.pages:
-        tables = p.extract_tables({
-            "vertical_strategy": "lines",
-            "horizontal_strategy": "text"
-        })
-        if tables:
-            for table in tables:
-                if is_earnings_table(table):
-                    all_data += parse_table(table)
+        # Extract words with position information
+        words = p.extract_words(x_tolerance=3, y_tolerance=3)
+
+        # Detect column boundaries from header
+        column_bounds = detect_column_boundaries(words)
+        if not column_bounds:
+            # Fall back to old table-based method if column detection fails
+            tables = p.extract_tables({
+                "vertical_strategy": "lines",
+                "horizontal_strategy": "text"
+            })
+            if tables:
+                for table in tables:
+                    if is_earnings_table(table):
+                        all_data += parse_table(table)
+            continue
+
+        # Find earnings section boundaries and Other Benefits section
+        earnings_start = None
+        earnings_end = None
+        other_benefits_start = None
+        other_benefits_end = None
+
+        for i, word in enumerate(words):
+            if 'Earnings' in word['text'] and earnings_start is None:
+                earnings_start = i
+            elif 'Other' in word['text'] and i+1 < len(words) and 'Benefits' in words[i+1]['text'] and word['x0'] > 320:
+                other_benefits_start = i
+            elif earnings_start and not earnings_end:
+                # Look for end markers: "Total Net Pay" or "Deposited to"
+                if ('Total' in word['text'] and i+1 < len(words) and 'Net' in words[i+1]['text']) or \
+                   ('Deposited' in word['text'] and i+1 < len(words) and 'to' in words[i+1]['text']):
+                    # Find end of current line (or go back a bit for "Deposited")
+                    target_y = word['top'] - (10 if 'Deposited' in word['text'] else 0)
+                    for j in range(i-5 if 'Deposited' in word['text'] else i, min(i+20, len(words))):
+                        if words[j]['top'] > target_y + 2:
+                            earnings_end = j
+                            other_benefits_end = j  # Same end point for both tables
+                            break
+                    break
+
+        # Parse main earnings table
+        if earnings_start and earnings_end:
+            # Group words into rows
+            rows = group_words_by_row(words, earnings_start, earnings_end)
+
+            # Parse each row with position awareness
+            for row_words in rows:
+                parsed = parse_row_with_positions(row_words, column_bounds)
+                if parsed:
+                    # Handle "Withholding Tax" special case (row continuation)
+                    if parsed.get('desc') == 'Withholding Tax' and all_data:
+                        # Merge with previous row's description
+                        prev_row = all_data[-1]
+                        if prev_row and len(prev_row) > 0:
+                            parsed['desc'] = prev_row[0].get('desc', '')
+                            all_data[-1] = [parsed]
+                    else:
+                        all_data.append([parsed])
+
+        # Parse Other Benefits table
+        if other_benefits_start and other_benefits_end:
+            other_benefits_data = parse_other_benefits_table(words, other_benefits_start, other_benefits_end)
+            for item in other_benefits_data:
+                all_data.append([item])
 
     return all_data
 
@@ -574,13 +858,16 @@ def search_properties(desc):
         if re.search(account["pattern"], desc):
             return account
 
+def is_quota_subject(item):
+    return item[desc] in ['FloatHol', 'PTO']
+
 def process(file_path, book, registry):
     """Process a JSON file and create GnuCash transactions"""
     date = parse_date_from_file_name(file_path)
     with open(file_path, "r") as f:
         data = json.load(f)
 
-    current = [item for sublist in data for item in sublist if "cur" in item]
+    current = [item for sublist in data for item in sublist if "cur" in item or is_quota_subject(item)]
 
     deferred_functions = []
     groups = { 'earnings': [] }
