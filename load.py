@@ -38,16 +38,42 @@ class AccountRegistry:
         return account_path in self._accounts
 
 
-def print_value(splits_groups, properties, value, desc, data, registry):
-    print(desc, value)
+def add_split(splits_groups, group_name, account, memo, value):
+    """
+    Add a split to a specific group within splits_groups.
 
-def earnings(splits_groups, properties, value, desc, data, registry):
-    splits = splits_groups["earnings"]
+    Args:
+        splits_groups: Dictionary containing split groups
+        group_name: Name of the group (e.g., 'earnings', 'invisible', 'match401k', 'matchrestor')
+        account: GnuCash account object
+        memo: Description for the split
+        value: Decimal value for the split
+    """
+    if group_name not in splits_groups:
+        splits_groups[group_name] = []
+
+    print("add split", group_name, account, memo, value)
+    splits_groups[group_name].append(piecash.Split(account=account, memo=memo, value=value))
+
+
+def print_value(splits_groups, properties, item, data, registry):
+    print(item["desc"], item.get("cur"))
+
+def earnings(splits_groups, properties, item, data, registry):
+    value = parse_amount(item.get("cur"))
+
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
 
     account = registry.get(properties["account"])
-    splits.append(piecash.Split(account=account, memo=properties["desc"], value=-value))
+    add_split(splits_groups, "earnings", account, properties["desc"], -value)
 
-def outstanding_stock_tax(splits_groups, properties, value, desc, data, registry):
+def outstanding_stock_tax(splits_groups, properties, item, data, registry):
+    value = parse_amount(item.get("cur"))
+
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
+
     def deferred_outstanding_stock_tax():
         splits = splits_groups["earnings"]
 
@@ -58,25 +84,35 @@ def outstanding_stock_tax(splits_groups, properties, value, desc, data, registry
                 taxable_rsu += split.value
 
         aftertax_rsu_account = registry.get(ACCOUNT_PATHS['ASSET_STOCKS_RSU'])
-        #print("split", "aftertax rsu", value - taxable_rsu)
-        splits.append(piecash.Split(account=aftertax_rsu_account, memo="aftertax rsu", value=value - taxable_rsu))
+        add_split(splits_groups, "earnings", aftertax_rsu_account, "aftertax rsu", value - taxable_rsu)
 
         stock_tax_account = registry.get(ACCOUNT_PATHS['EXPENSE_TAXES_STOCK'])
         delta = Decimal('0.00')
         for split in splits:
             delta += split.value
-        #print("split", "stock tax", delta)
-        splits.append(piecash.Split(account=stock_tax_account, memo="stock tax", value=-delta))
+        add_split(splits_groups, "earnings", stock_tax_account, "stock tax", -delta)
 
     return deferred_outstanding_stock_tax
 
+def dcp_payout(splits_groups, properties, item, data, registry):
+    value = parse_amount(item.get("cur"))
 
-def drsu_vest(splits_groups, properties, value, desc, data, registry):
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
+
+    add_split(splits_groups, "earnings", registry.get(properties["account"]), properties["desc"], -value)
+    add_split(splits_groups, "earnings", registry.get(ACCOUNT_PATHS['ASSET_DCP_PAYOUT']), "unknown split", -value)
+    add_split(splits_groups, "earnings", registry.get(ACCOUNT_PATHS['EQUITY_PAYOUT_DCP']), "unknown split", value)
+
+def drsu_vest(splits_groups, properties, item, data, registry):
     splits = splits_groups["earnings"]
+    value = parse_amount(item.get("cur"))
+
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
 
     drsu_income_account = registry.get(ACCOUNT_PATHS['INCOME_TAXABLE_DRSU'])
-    # print(desc, value)
-    splits.append(piecash.Split(account=drsu_income_account, memo=properties["desc"], value=-value))
+    add_split(splits_groups, "earnings", drsu_income_account, properties["desc"], -value)
 
     def deferred_drsu_vest():
         total = Decimal('0.00')
@@ -84,57 +120,62 @@ def drsu_vest(splits_groups, properties, value, desc, data, registry):
             total += split.value
 
         drsu_account = registry.get(ACCOUNT_PATHS['ASSET_STOCKS_DRSU'])
-        # print(desc, value)
-        splits.append(piecash.Split(account=drsu_account, memo=properties["desc"], value=value))
+        # print(item["desc"], value)
+        add_split(splits_groups, "earnings", drsu_account, properties["desc"], value)
 
         stock_tax_account = registry.get(ACCOUNT_PATHS['EXPENSE_TAXES_STOCK'])
-        splits.append(piecash.Split(account=stock_tax_account, memo="fica and medfica taxes", value=-value-total))
+        add_split(splits_groups, "earnings", stock_tax_account, "fica and medfica taxes", -value-total)
 
     return deferred_drsu_vest
 
 
-def add_imputed_income(splits_groups, properties, value, desc, data, registry):
-    if "invisible" in splits_groups:
-        splits = splits_groups["invisible"]
-    else:
-        splits = []
-        splits_groups["invisible"] = splits
+def add_imputed_income(splits_groups, properties, item, data, registry):
+    value = parse_amount(item.get("cur"))
+
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
 
     invisible_equity_account = registry.get(ACCOUNT_PATHS['EQUITY_INVISIBLE'])
-    splits.append(piecash.Split(account=invisible_equity_account, memo=properties["desc"], value=value))
+    add_split(splits_groups, "invisible", invisible_equity_account, properties["desc"], value)
 
     imputed_income_account = registry.get(ACCOUNT_PATHS['INCOME_TAXABLE_IMPUTED'])
-    splits.append(piecash.Split(account=imputed_income_account, memo=properties["desc"], value=-value))
+    add_split(splits_groups, "invisible", imputed_income_account, properties["desc"], -value)
 
-def match_401k(splits_groups, properties, value, desc, data, registry):
-    if "match401k" in splits_groups:
-        splits = splits_groups["match401k"]
-    else:
-        splits = []
-        splits_groups["match401k"] = splits
+def match_401k(splits_groups, properties, item, data, registry):
+    value = parse_amount(item.get("cur"))
+
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
 
     match_401k_account = registry.get(ACCOUNT_PATHS['ASSET_401K_PRETAX_EMPLOYER'])
-    splits.append(piecash.Split(account=match_401k_account, memo=properties["desc"], value=value))
+    add_split(splits_groups, "match401k", match_401k_account, properties["desc"], value)
 
     non_taxable_401k_account = registry.get(ACCOUNT_PATHS['INCOME_NONTAXABLE_401K'])
-    splits.append(piecash.Split(account=non_taxable_401k_account, memo=properties["desc"], value=-value))
+    add_split(splits_groups, "match401k", non_taxable_401k_account, properties["desc"], -value)
 
-def match_restor(splits_groups, properties, value, desc, data, registry):
-    if "matchrestor" in splits_groups:
-        splits = splits_groups["matchrestor"]
-    else:
-        splits = []
-        splits_groups["matchrestor"] = splits
+def match_restor(splits_groups, properties, item, data, registry):
+    value = parse_amount(item.get("cur"))
+
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
 
     match_restor_account = registry.get(ACCOUNT_PATHS['ASSET_DCP_RESTOR'])
-    splits.append(piecash.Split(account=match_restor_account, memo=properties["desc"], value=value))
+    add_split(splits_groups, "matchrestor", match_restor_account, properties["desc"], value)
 
     non_taxable_restor_account = registry.get(ACCOUNT_PATHS['INCOME_NONTAXABLE_MISC'])
-    splits.append(piecash.Split(account=non_taxable_restor_account, memo=properties["desc"], value=-value))
+    add_split(splits_groups, "matchrestor", non_taxable_restor_account, properties["desc"], -value)
 
 
-def total_net_pay(splits_groups, properties, value, desc, data, registry):
-    return earnings(splits_groups, properties, -value, desc, data, registry)
+def total_net_pay(splits_groups, properties, item, data, registry):
+    value = parse_amount(item.get("cur"))
+
+    if value is None:
+        raise ValueError(f"Missing or invalid 'cur' value for item: {item['desc']}")
+
+    # Create a modified item with negated value
+    modified_item = item.copy()
+    modified_item["cur"] = str(-value)
+    return earnings(splits_groups, properties, modified_item, data, registry)
 
 # Centralized registry of all account paths used in the system
 ACCOUNT_PATHS = {
@@ -152,6 +193,7 @@ ACCOUNT_PATHS = {
     'ASSET_STOCKS_DRSU': 'Assets:Stocks:DRSU',
     'ASSET_BANK_CHECKING': 'Assets:Bank:Checking',
     'ASSET_RECEIVABLES_PTO': 'Assets:Receivables:PTO',
+    'ASSET_DCP_PAYOUT': 'Assets:DCP:Payout',
 
     # Income accounts
     'INCOME_TAXABLE_REGULAR': 'Income:Taxable:Regular',
@@ -160,6 +202,7 @@ ACCOUNT_PATHS = {
     'INCOME_TAXABLE_DRSU': 'Income:Taxable:DRSU',
     'INCOME_TAXABLE_ESPP': 'Income:Taxable:ESPP',
     'INCOME_TAXABLE_PTO': 'Income:Taxable:PTO',
+    'INCOME_TAXABLE_DCP': 'Income:Taxable:DCP',
     'INCOME_TAXABLE_FLOAT_HOL': 'Income:Taxable:FloatHol',
     'INCOME_TAXABLE_FLOATING_HOLIDAY': 'Income:Taxable:FloatingHoliday',
     'INCOME_TAXABLE_MISC': 'Income:Taxable:Misc',
@@ -179,12 +222,14 @@ ACCOUNT_PATHS = {
     'EXPENSE_TAXES_FEDERAL': 'Expenses:Taxes:Federal',
     'EXPENSE_TAXES_STATE': 'Expenses:Taxes:State',
     'EXPENSE_TAXES_CALIFORNIA': 'Expenses:Taxes:California',
+    'EXPENSE_TAXES_VSD': 'Expenses:Taxes:VSD',
     'EXPENSE_TAXES_FICA': 'Expenses:Taxes:FICA',
     'EXPENSE_TAXES_MEDICARE': 'Expenses:Taxes:Medicare',
     'EXPENSE_TAXES_STOCK': 'Expenses:Taxes:Stock',
 
     # Equity accounts
     'EQUITY_INVISIBLE': 'Equity:Invisible',
+    'EQUITY_PAYOUT_DCP': 'Equity:Payout:DCP',
 }
 
 ACCOUNTS = {
@@ -204,6 +249,10 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['ASSET_DCP_REGULAR'],
         'desc': 'Regular',
     },
+    '*ML Dental EE + FM': {
+        'account': ACCOUNT_PATHS['EXPENSE_PRETAX_DENTAL'],
+        'desc': 'EE+FM',
+    },
     '*Dental Plan - Pre Tax': {
         'account': ACCOUNT_PATHS['EXPENSE_PRETAX_DENTAL'],
         'desc': 'Dental',
@@ -215,6 +264,14 @@ ACCOUNTS = {
     '*Medical Plan - Pre tax': {
         'account': ACCOUNT_PATHS['EXPENSE_PRETAX_MEDICAL'],
         'desc': 'Medical',
+    },
+    '*Med Kaiser EE+FAM': {
+        'account': ACCOUNT_PATHS['EXPENSE_PRETAX_MEDICAL'],
+        'desc': 'EE+FAM',
+    },
+    '*Vision - EE + Fam': {
+        'account': ACCOUNT_PATHS['EXPENSE_PRETAX_VISION'],
+        'desc': 'EE+Fam',
     },
     '*Vision Plan - Pre Tax': {
         'account': ACCOUNT_PATHS['EXPENSE_PRETAX_VISION'],
@@ -247,9 +304,22 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_BONUS'],
         'desc': 'Bonus',
     },
+    'Def Comp Payout': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_DCP'],
+        'desc': 'Payout',
+        'function': dcp_payout,
+    },
+    'DLF CH Ins 50k': {
+        'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_LIFE'],
+        'desc': 'Child 50k',
+    },
     'Child Life Insurance': {
         'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_LIFE'],
         'desc': 'Child',
+    },
+    'DLF SP - 150K': {
+        'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_LIFE'],
+        'desc': 'Spouse 150k',
     },
     'Critical Illness -Spouse': {
         'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_ILLNESS'],
@@ -302,12 +372,20 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['ASSET_FSA_HEALTH'],
         'desc': 'FSA',
     },
-    'Floating Holiday 136.93 8.00': {
+    'Floating Holiday': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_FLOATING_HOLIDAY'],
-        'desc': 'Floating Holiday 136.93 8.00',
+        'desc': 'Floating Holiday',
     },
     'Gross Pay': {
         'function': print_value
+    },
+    'Service AWD GUP': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'Service AWD GUP',
+    },
+    'CR Gift AWD GUP': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'CR Gift AWD GUP',        
     },
     'Imputed Income -': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_IMPUTED'],
@@ -342,41 +420,9 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
         'desc': 'PTO Payout 136.93 81.89',
     },
-    'Paid Time Off 136.93 24.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 24.00',
-    },
-    'Paid Time Off 136.93 32.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 32.00',
-    },
-    'Paid Time Off 136.93 40.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 40.00',
-    },
-    'Paid Time Off 136.93 64.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 64.00',
-    },
-    'Paid Time Off 136.93 8.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 8.00',
-    },
-    'Paid Time Off 136.93 80.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 80.00',
-    },
-    'Paid Time Off 136.93 88.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 88.00',
-    },
-    'Paid Time Off 136.93 96.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 96.00',
-    },
-    'Paid Time Off 136.93 9.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'Paid Time Off 136.93 9.00',
+    'ML PP Legal STD': {
+        'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_LEGAL'],
+        'desc': 'STD',
     },
     'Prepaid Legal Plan': {
         'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_LEGAL'],
@@ -386,31 +432,7 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_RSU'],
         'desc': 'Stock',
     },
-    'Regular Salary 16.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
-        'desc': 'Regular Salary 16.00',
-    },
-    'Regular Salary 40.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
-        'desc': 'Regular Salary 40.00',
-    },
-    'Regular Salary 48.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
-        'desc': 'Regular Salary 48.00',
-    },
-    'Regular Salary 56.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
-        'desc': 'Regular Salary 56.00',
-    },
-    'Regular Salary 64.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
-        'desc': 'Regular Salary 64.00',
-    },
-    'Regular Salary 72.00': {
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
-        'desc': 'Regular Salary 72.00',
-    },
-    'Regular Salary 80.00': {
+    'Regular Salary': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
         'desc': 'Regular Salary 80.00',
     },
@@ -435,6 +457,10 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['EXPENSE_TAXES_STATE'],
         'desc': 'State',
     },
+    'EE Voluntary Disabilit': {
+        'account': ACCOUNT_PATHS['EXPENSE_TAXES_VSD'],
+        'desc': 'State Voluntary Disability',
+    },
     'Total Net Pay': {
         'account': ACCOUNT_PATHS['ASSET_BANK_CHECKING'],
         'desc': 'Net Pay',
@@ -445,22 +471,47 @@ ACCOUNTS = {
     },
     'STK Tax OS RSU/P': {
         'function': outstanding_stock_tax,
+    },
+    'SPST': {
+        'function': print_value
+    },
+    'PTO': {
+        'account': ACCOUNT_PATHS['ASSET_RECEIVABLES_PTO'],
+        'function': print_value
+    },
+    'FloatHol': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_FLOAT_HOL'],
+        'function': print_value
+    },
+    'CR Cash AWD': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'CR Cash Award',
+    },
+    'CR Gift Award TX': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'CR Gift Award Tax',
+    },
+    'Service AWD TX': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'Service Award Tax',
+    },
+    'Patent AWD - GUP': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'Patent Award Gross Up',
+    },
+    'Service AWD GUP': {    
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'Service Award Gross Up',
+        'function': add_imputed_income
     }
 }
 
 SEARCH_ACCOUNTS = [
     {
-        'pattern': r"^PTO \d+\.\d+",
-        'account': ACCOUNT_PATHS['ASSET_RECEIVABLES_PTO'],
-        'desc': 'PTO 252.24',
-        'function': print_value
+        'pattern': r'^Paid Time Off$',
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
+        'desc': 'Paid Time Off',
     },
-    {
-        'pattern': r"^FloatHol \d+\.\d+",
-        'account': ACCOUNT_PATHS['INCOME_TAXABLE_FLOAT_HOL'],
-        'desc': 'Floating Holiday Balance',
-        'function': print_value
-    }
 ]
 
 
@@ -485,7 +536,7 @@ def is_amount(text):
 def parse_date_from_file_name(path):
     file_name = path.split("/")[-1]
 
-    # Format 1: "Payslip_2024-01-05.pdf" or "Payslip_2024-01-05(1).pdf"
+    # Format 1: "Payslip_2024-01-05.json" or "Payslip_2024-01-05(1).json"
     if "_" in file_name:
         suffix = file_name.split("_")[1]
         prefix = suffix.split("(")[0]
@@ -495,10 +546,10 @@ def parse_date_from_file_name(path):
         except ValueError:
             pass
 
-    # Format 2: "Statement for Apr 16, 2021.pdf" or "Statement for Apr 16, 2021-1.pdf"
+    # Format 2: "Statement for Apr 16, 2021.json" or "Statement for Apr 16, 2021-1.json"
     if "Statement for" in file_name:
-        # Extract date portion: "Apr 16, 2021" from "Statement for Apr 16, 2021.pdf"
-        date_part = file_name.replace("Statement for ", "").split(".pdf")[0]
+        # Extract date portion: "Apr 16, 2021" from "Statement for Apr 16, 2021.json"
+        date_part = file_name.replace("Statement for ", "").split(".json")[0]
         # Remove trailing -N suffix if present
         date_part = re.sub(r'-\d+$', '', date_part)
         try:
@@ -791,6 +842,8 @@ def parse_other_benefits_table(words, start_idx, end_idx):
 def parse_file(file_path):
     all_data = []
     pdf = pdfplumber.open(file_path)
+    saved_column_bounds = None  # Remember column boundaries from first page
+    is_continuation_page = False  # Track if we're on a continuation page
 
     for p in pdf.pages:
         # Extract words with position information
@@ -798,6 +851,16 @@ def parse_file(file_path):
 
         # Detect column boundaries from header
         column_bounds = detect_column_boundaries(words)
+
+        # If not found on this page, use saved bounds from previous page
+        if not column_bounds and saved_column_bounds:
+            column_bounds = saved_column_bounds
+            is_continuation_page = True
+        elif column_bounds and not saved_column_bounds:
+            # Save the first detected column bounds
+            saved_column_bounds = column_bounds
+            is_continuation_page = False
+
         if not column_bounds:
             # Fall back to old table-based method if column detection fails
             tables = p.extract_tables({
@@ -816,12 +879,17 @@ def parse_file(file_path):
         other_benefits_start = None
         other_benefits_end = None
 
+        # On continuation pages, start parsing from the beginning of the page
+        if is_continuation_page and earnings_start is None:
+            earnings_start = 0
+
         for i, word in enumerate(words):
             if 'Earnings' in word['text'] and earnings_start is None:
                 earnings_start = i
             elif 'Other' in word['text'] and i+1 < len(words) and 'Benefits' in words[i+1]['text'] and word['x0'] > 320:
                 other_benefits_start = i
-            elif earnings_start and not earnings_end:
+
+            if earnings_start is not None and not earnings_end:
                 # Look for end markers: "Total Net Pay" or "Deposited to"
                 if ('Total' in word['text'] and i+1 < len(words) and 'Net' in words[i+1]['text']) or \
                    ('Deposited' in word['text'] and i+1 < len(words) and 'to' in words[i+1]['text']):
@@ -834,8 +902,12 @@ def parse_file(file_path):
                             break
                     break
 
+        # If we didn't find an end marker, use end of page (earnings continue to next page)
+        if earnings_start is not None and not earnings_end:
+            earnings_end = len(words)
+
         # Parse main earnings table
-        if earnings_start and earnings_end:
+        if earnings_start is not None and earnings_end:
             # Group words into rows
             rows = group_words_by_row(words, earnings_start, earnings_end)
 
@@ -876,7 +948,10 @@ def search_properties(desc):
             return account
 
 def is_quota_subject(item):
-    return item[desc] in ['FloatHol', 'PTO']
+    return item['desc'] in ['FloatHol', 'PTO']
+
+def ignored(item):
+    return 'desc' in item and item['desc'] in ['San Jose']
 
 def process(file_path, book, registry):
     """Process a JSON file and create GnuCash transactions"""
@@ -884,7 +959,7 @@ def process(file_path, book, registry):
     with open(file_path, "r") as f:
         data = json.load(f)
 
-    current = [item for sublist in data for item in sublist if "cur" in item or is_quota_subject(item)]
+    current = [item for sublist in data for item in sublist if not ignored(item) and ("cur" in item or is_quota_subject(item))]
 
     deferred_functions = []
     groups = { 'earnings': [] }
@@ -893,21 +968,25 @@ def process(file_path, book, registry):
 
         properties = ACCOUNTS[item["desc"]] if item["desc"] in ACCOUNTS else search_properties(desc)
         if properties:
-            # print(item, properties)
+            #print(item, properties)
             func = properties["function"] if "function" in properties else earnings
-            ret = func(groups, properties, parse_amount(item["cur"]), item["desc"], data, registry)
+            ret = func(groups, properties, item, data, registry)
             if ret is not None:
                 deferred_functions.append(ret)
+        else:
+            print("Unknown account", desc)
 
     for func in deferred_functions:
         func()
 
+    # Combine all splits from all groups into a single transaction
     currency = book.commodities(mnemonic="USD")
+    all_splits = []
     for id, splits in groups.items():
-        if len(splits) == 0:
-            continue
-        # print("transaction", id)
-        piecash.Transaction(post_date=date, splits=splits, currency=currency)
+        all_splits.extend(splits)
+
+    if len(all_splits) > 0:
+        piecash.Transaction(post_date=date, splits=all_splits, currency=currency, description="Paycheck")
 
 
 def create_gnucash_accounts(gnucash_file):
@@ -972,29 +1051,26 @@ def create_gnucash_accounts(gnucash_file):
 
 def main():
     parser = argparse.ArgumentParser(description='Process payroll PDFs and load into GnuCash')
-    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
 
-    # Preprocess command
-    preprocess_parser = subparsers.add_parser('preprocess', help='Extract JSON from PDF file(s)')
-    preprocess_parser.add_argument('path', help='Path to PDF file or directory containing PDFs')
+    # Main arguments
+    parser.add_argument('gnucash_file', help='Path to GnuCash file')
+    parser.add_argument('path', nargs='?', help='Path to PDF/JSON file or directory containing PDF/JSON files')
 
-    # Init command
-    init_parser = subparsers.add_parser('init', help='Create new GnuCash file with accounts')
-    init_parser.add_argument('gnucash_file', help='Path to new GnuCash file to create')
-
-    # Load command
-    load_parser = subparsers.add_parser('load', help='Load JSON data into GnuCash')
-    load_parser.add_argument('gnucash_file', help='Path to GnuCash file')
-    load_parser.add_argument('path', help='Path to JSON file or directory containing JSON files')
-
-    # Clean command
-    clean_parser = subparsers.add_parser('clean', help='Delete JSON files generated during preprocessing')
-    clean_parser.add_argument('path', help='Path to JSON file or directory containing JSON files')
-    clean_parser.add_argument('--force', '-f', action='store_true', help='Delete without confirmation')
+    # Flags
+    parser.add_argument('--init', action='store_true', help='Create/recreate GnuCash file with accounts before loading')
+    parser.add_argument('--clean', action='store_true', help='Delete generated JSON files after successful load')
+    parser.add_argument('--force', '-f', action='store_true', help='[Deprecated] Force operations without confirmation')
+    parser.add_argument('--preprocess-only', action='store_true', help='Only preprocess PDFs to JSON without loading')
 
     args = parser.parse_args()
 
-    if args.command == 'preprocess':
+    # Handle --preprocess-only flag (standalone operation)
+    if args.preprocess_only:
+        if not args.path:
+            print("Error: path argument is required with --preprocess-only")
+            parser.print_help()
+            return
+
         if os.path.isdir(args.path):
             for file in sorted(os.listdir(args.path)):
                 if file.endswith(".pdf"):
@@ -1011,90 +1087,97 @@ def main():
                 print(f"Error: {args.path} is not a PDF file")
         else:
             print(f"Error: {args.path} is not a valid path")
+        return
 
-    elif args.command == 'init':
+    # Validate path argument for load operations
+    if not args.path:
+        print("Error: path argument is required")
+        parser.print_help()
+        return
+
+    # Handle --init flag: recreate GnuCash file before load
+    if args.init:
         if os.path.exists(args.gnucash_file):
             response = input(f"File {args.gnucash_file} already exists. Overwrite? (yes/no): ")
             if response.lower() != 'yes':
                 print("Aborted.")
                 return
+        print(f"Creating GnuCash file: {args.gnucash_file}")
         create_gnucash_accounts(args.gnucash_file)
+    elif not os.path.exists(args.gnucash_file):
+        print(f"Error: GnuCash file {args.gnucash_file} does not exist. Use --init to create it.")
+        return
 
-    elif args.command == 'load':
-        book = piecash.open_book(args.gnucash_file, readonly=False, do_backup=False, open_if_lock=True)
-        registry = AccountRegistry()
-        try:
-            registry.load_from_book(book)
+    # Load into GnuCash
+    book = piecash.open_book(args.gnucash_file, readonly=False, do_backup=False, open_if_lock=True)
+    registry = AccountRegistry()
 
-            if os.path.isdir(args.path):
-                json_filepaths = []
-                for file in sorted(os.listdir(args.path)):
-                    if file.endswith(".json"):
-                        file_path = os.path.join(args.path, file)
-                        print(f"Loading {file_path}...")
-                        process(file_path, book, registry)
-            elif os.path.isfile(args.path):
-                if args.path.endswith(".json"):
-                    print(f"Loading {args.path}...")
-                    process(args.path, book, registry)
-                else:
-                    print(f"Error: {args.path} is not a JSON file")
-            else:
-                raise ValueError(f"The path '{args.path}' is not valid")
+    # Track JSON files created from PDFs for cleanup
+    created_json_files = []
 
-            book.save()
-            print("Successfully saved to GnuCash")
-        except Exception as e:
-            print(f"Error: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            book.close()
+    try:
+        registry.load_from_book(book)
 
-    elif args.command == 'clean':
-        json_files = []
+        files_to_process = []
 
         if os.path.isdir(args.path):
+            # Process directory - handle both PDFs and JSONs
             for file in sorted(os.listdir(args.path)):
-                if file.endswith(".json"):
-                    json_files.append(os.path.join(args.path, file))
+                file_path = os.path.join(args.path, file)
+                if file.endswith(".pdf"):
+                    # Preprocess PDF to JSON
+                    print(f"Preprocessing {file_path}...")
+                    json_filepath = extract(file_path)
+                    print(f"Created {json_filepath}")
+                    files_to_process.append(json_filepath)
+                    created_json_files.append(json_filepath)
+                elif file.endswith(".json"):
+                    files_to_process.append(file_path)
+
+            # Load all JSON files
+            for json_path in files_to_process:
+                print(f"Loading {json_path}...")
+                process(json_path, book, registry)
+
         elif os.path.isfile(args.path):
-            if args.path.endswith(".json"):
-                json_files.append(args.path)
+            if args.path.endswith(".pdf"):
+                # Preprocess single PDF to JSON
+                print(f"Preprocessing {args.path}...")
+                json_filepath = extract(args.path)
+                print(f"Created {json_filepath}")
+                created_json_files.append(json_filepath)
+                print(f"Loading {json_filepath}...")
+                process(json_filepath, book, registry)
+            elif args.path.endswith(".json"):
+                print(f"Loading {args.path}...")
+                process(args.path, book, registry)
             else:
-                print(f"Error: {args.path} is not a JSON file")
-                return
+                print(f"Error: {args.path} is not a PDF or JSON file")
         else:
-            print(f"Error: {args.path} is not a valid path")
-            return
+            raise ValueError(f"The path '{args.path}' is not valid")
 
-        if not json_files:
-            print(f"No JSON files found in {args.path}")
-            return
+        book.save()
+        print("Successfully saved to GnuCash")
 
-        print(f"Found {len(json_files)} JSON file(s) to delete:")
-        for f in json_files:
-            print(f"  {f}")
+        # Handle --clean flag: clean up JSON files after successful load
+        if args.clean and created_json_files:
+            print(f"\nCleaning up {len(created_json_files)} generated JSON file(s)...")
+            deleted_count = 0
+            for json_file in created_json_files:
+                try:
+                    os.remove(json_file)
+                    print(f"Deleted: {json_file}")
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"Error deleting {json_file}: {e}")
+            print(f"Successfully deleted {deleted_count}/{len(created_json_files)} file(s)")
 
-        if not args.force:
-            response = input(f"\nDelete {len(json_files)} file(s)? (yes/no): ")
-            if response.lower() != 'yes':
-                print("Aborted.")
-                return
-
-        deleted_count = 0
-        for json_file in json_files:
-            try:
-                os.remove(json_file)
-                print(f"Deleted: {json_file}")
-                deleted_count += 1
-            except Exception as e:
-                print(f"Error deleting {json_file}: {e}")
-
-        print(f"\nSuccessfully deleted {deleted_count}/{len(json_files)} file(s)")
-
-    else:
-        parser.print_help()
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        book.close()
 
 if __name__ == "__main__":
     main()
