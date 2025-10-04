@@ -987,6 +987,11 @@ def main():
     load_parser.add_argument('gnucash_file', help='Path to GnuCash file')
     load_parser.add_argument('path', help='Path to JSON file or directory containing JSON files')
 
+    # Clean command
+    clean_parser = subparsers.add_parser('clean', help='Delete JSON files generated during preprocessing')
+    clean_parser.add_argument('path', help='Path to JSON file or directory containing JSON files')
+    clean_parser.add_argument('--force', '-f', action='store_true', help='Delete without confirmation')
+
     args = parser.parse_args()
 
     if args.command == 'preprocess':
@@ -1045,6 +1050,48 @@ def main():
             traceback.print_exc()
         finally:
             book.close()
+
+    elif args.command == 'clean':
+        json_files = []
+
+        if os.path.isdir(args.path):
+            for file in sorted(os.listdir(args.path)):
+                if file.endswith(".json"):
+                    json_files.append(os.path.join(args.path, file))
+        elif os.path.isfile(args.path):
+            if args.path.endswith(".json"):
+                json_files.append(args.path)
+            else:
+                print(f"Error: {args.path} is not a JSON file")
+                return
+        else:
+            print(f"Error: {args.path} is not a valid path")
+            return
+
+        if not json_files:
+            print(f"No JSON files found in {args.path}")
+            return
+
+        print(f"Found {len(json_files)} JSON file(s) to delete:")
+        for f in json_files:
+            print(f"  {f}")
+
+        if not args.force:
+            response = input(f"\nDelete {len(json_files)} file(s)? (yes/no): ")
+            if response.lower() != 'yes':
+                print("Aborted.")
+                return
+
+        deleted_count = 0
+        for json_file in json_files:
+            try:
+                os.remove(json_file)
+                print(f"Deleted: {json_file}")
+                deleted_count += 1
+            except Exception as e:
+                print(f"Error deleting {json_file}: {e}")
+
+        print(f"\nSuccessfully deleted {deleted_count}/{len(json_files)} file(s)")
 
     else:
         parser.print_help()

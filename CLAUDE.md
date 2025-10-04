@@ -31,7 +31,7 @@ pyenv exec pip install -r requirements.txt
 
 ### Running the Application
 
-The application has three main commands:
+The application has four main commands:
 
 **Initialize a new GnuCash file with all accounts:**
 
@@ -51,6 +51,14 @@ pyenv exec python load.py preprocess data/paystubs/file.pdf  # Process single PD
 ```bash
 pyenv exec python load.py load my_finances.gnucash data/paystubs  # Load all JSON files
 pyenv exec python load.py load my_finances.gnucash file.json      # Load single JSON file
+```
+
+**Clean up JSON files generated during preprocessing:**
+
+```bash
+pyenv exec python load.py clean data/paystubs        # Delete all JSON files in directory (with confirmation)
+pyenv exec python load.py clean file.json            # Delete single JSON file (with confirmation)
+pyenv exec python load.py clean data/paystubs --force  # Delete without confirmation
 ```
 
 ## Architecture
