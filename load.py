@@ -484,14 +484,31 @@ def is_amount(text):
 
 def parse_date_from_file_name(path):
     file_name = path.split("/")[-1]
-    suffix = file_name.split("_")[1]
-    prefix = suffix.split("(")[0]
-    prefix = prefix.split(".")[0]
-    try:
-        return datetime.strptime(prefix, "%Y-%m-%d").date()
-    except ValueError as e:
-        print("unable to parse date", prefix, e)
-        return None
+
+    # Format 1: "Payslip_2024-01-05.pdf" or "Payslip_2024-01-05(1).pdf"
+    if "_" in file_name:
+        suffix = file_name.split("_")[1]
+        prefix = suffix.split("(")[0]
+        prefix = prefix.split(".")[0]
+        try:
+            return datetime.strptime(prefix, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    # Format 2: "Statement for Apr 16, 2021.pdf" or "Statement for Apr 16, 2021-1.pdf"
+    if "Statement for" in file_name:
+        # Extract date portion: "Apr 16, 2021" from "Statement for Apr 16, 2021.pdf"
+        date_part = file_name.replace("Statement for ", "").split(".pdf")[0]
+        # Remove trailing -N suffix if present
+        date_part = re.sub(r'-\d+$', '', date_part)
+        try:
+            return datetime.strptime(date_part, "%b %d, %Y").date()
+        except ValueError as e:
+            print("unable to parse date from Statement format:", date_part, e)
+            return None
+
+    print("unable to parse date from filename:", file_name)
+    return None
 
 def parse_cell(cell):
     if cell is None or len(cell) == 0 or not re.search(r"[a-zA-Z0-9,]", cell):
