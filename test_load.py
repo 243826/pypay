@@ -205,6 +205,84 @@ def test_multiple_paychecks():
         os.unlink(gnucash_file)
 
 
+def test_errata_file_processing():
+    """Test that errata files are correctly loaded and merged"""
+    import json
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix='.gnucash', delete=False) as tmp:
+        gnucash_file = tmp.name
+
+    # Create JSON file with proper naming
+    tmpdir = tempfile.mkdtemp()
+    json_file = os.path.join(tmpdir, 'Statement for Jan 01, 2021.json')
+    with open(json_file, 'w') as f:
+        # Create a minimal test JSON
+        json.dump([
+            [{"desc": "Earnings Rate Hours/Units"}],
+            [{"desc": "Regular Salary", "cur": "1000.00", "ytd": "1000.00"}],
+            [{"desc": "Gross Pay", "cur": "1000.00", "ytd": "1000.00"}],
+            [{"desc": "Tax Deductions: Federal", "cur": "200.00-", "ytd": "200.00-"}],
+            [{"desc": "Total Net Pay", "cur": "800.00", "ytd": "800.00"}]
+        ], f)
+
+    # Create a mock PDF file for errata lookup
+    pdf_file = json_file.replace('.json', '.pdf')
+    with open(pdf_file, 'w') as f:
+        f.write('mock pdf')
+
+    # Create errata file next to PDF
+    errata_file = pdf_file.replace('.pdf', '.json').replace('Statement for', 'Errata for')
+    with open(errata_file, 'w') as f:
+        # Create errata with additional deduction and corresponding income adjustment
+        json.dump([
+            {"desc": "EE Social Security Tax", "cur": "62.00-"},
+            {"desc": "Regular Salary", "cur": "62.00"}
+        ], f)
+
+    try:
+        # Create GnuCash file with accounts
+        create_gnucash_accounts(gnucash_file)
+
+        book = piecash.open_book(gnucash_file, readonly=False, do_backup=False, open_if_lock=True)
+        registry = AccountRegistry()
+        registry.load_from_book(book)
+
+        # Process with source PDF path for errata lookup
+        process(json_file, book, registry, source_pdf_path=pdf_file)
+        book.save()
+
+        # Verify transaction was created
+        transactions = list(book.transactions)
+        assert len(transactions) == 1, f"Expected 1 transaction, got {len(transactions)}"
+
+        # Verify errata items were included
+        splits = transactions[0].splits
+        split_memos = [s.memo for s in splits]
+
+        # Verify both errata items are included
+        assert 'EE' in split_memos, "Errata item 'EE' (Social Security) not found in splits"
+
+        # Count Regular Salary splits (should have 2: one from JSON, one from errata)
+        # The memo is actually just the descriptor part after the full description lookup
+        salary_count = sum(1 for memo in split_memos if 'Salary' in memo)
+        assert salary_count >= 2, f"Expected at least 2 salary splits (1 from JSON + 1 from errata), got {salary_count}. Memos: {split_memos}"
+
+        # Verify transaction balances
+        total = sum(split.value for split in splits)
+        assert total == Decimal('0.00'), f"Transaction should balance to 0, got {total}"
+
+        print(f"✓ test_errata_file_processing PASSED (errata items included and balanced)")
+        book.close()
+
+    finally:
+        os.unlink(gnucash_file)
+        # Clean up temp directory and all files in it
+        import shutil
+        if os.path.exists(tmpdir):
+            shutil.rmtree(tmpdir)
+
+
 if __name__ == "__main__":
     print("Running pypay automated tests...\n")
 
@@ -214,6 +292,7 @@ if __name__ == "__main__":
         test_transaction_has_description()
         test_all_splits_included()
         test_multiple_paychecks()
+        test_errata_file_processing()
 
         print("\n✓ All tests PASSED")
         sys.exit(0)

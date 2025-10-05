@@ -145,3 +145,5 @@ No formal test suite exists. Manual testing workflow:
 3. Check GnuCash database for correct transactions
 4. Validate double-entry balance (sum of splits = 0)
 - whenever you test the code, save the test code as automated tests which you can run anytime you alter the code.
+- run @test_load.py every single time @load.py is modified
+- update @test_load.py every single time you write code to test changes to @load.py

@@ -205,6 +205,8 @@ ACCOUNT_PATHS = {
     'INCOME_TAXABLE_DCP': 'Income:Taxable:DCP',
     'INCOME_TAXABLE_FLOAT_HOL': 'Income:Taxable:FloatHol',
     'INCOME_TAXABLE_FLOATING_HOLIDAY': 'Income:Taxable:FloatingHoliday',
+    'INCOME_TAXABLE_BIRTHDAY': 'Income:Taxable:Birthday',
+    'INCOME_TAXABLE_JURYDUTY': 'Income:Taxable:JuryDuty',
     'INCOME_TAXABLE_MISC': 'Income:Taxable:Misc',
     'INCOME_TAXABLE_IMPUTED': 'Income:Taxable:Imputed',
     'INCOME_NONTAXABLE_401K': 'Income:NonTaxable:401k',
@@ -226,13 +228,19 @@ ACCOUNT_PATHS = {
     'EXPENSE_TAXES_FICA': 'Expenses:Taxes:FICA',
     'EXPENSE_TAXES_MEDICARE': 'Expenses:Taxes:Medicare',
     'EXPENSE_TAXES_STOCK': 'Expenses:Taxes:Stock',
+    'EXPENSE_AFTERTAX_FITNESS': 'Expenses:Aftertax:Fitness',
 
     # Equity accounts
     'EQUITY_INVISIBLE': 'Equity:Invisible',
     'EQUITY_PAYOUT_DCP': 'Equity:Payout:DCP',
+    'EQUITY_ADJUSTMENT': 'Equity:Adjustment',
 }
 
 ACCOUNTS = {
+    'Manual Adjustment': {
+        'account': ACCOUNT_PATHS['EQUITY_ADJUSTMENT'],
+        'desc': 'Manual Adjustment',
+    },
     '*401(k) PreTax Reg': {
         'account': ACCOUNT_PATHS['ASSET_401K_PRETAX_ELECTIVE'],
         'desc': 'Reg',
@@ -280,6 +288,10 @@ ACCOUNTS = {
     '401k After-Tax Reg': {
         'account': ACCOUNT_PATHS['ASSET_401K_AFTERTAX'],
         'desc': 'Reg',
+    },
+    '401k AT BC': {
+        'account': ACCOUNT_PATHS['ASSET_401K_AFTERTAX'],
+        'desc': 'BC',
     },
     '401k Mat TUP PY': {
         'account': ACCOUNT_PATHS['ASSET_401K_PRETAX_EMPLOYER'],
@@ -385,7 +397,8 @@ ACCOUNTS = {
     },
     'CR Gift AWD GUP': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
-        'desc': 'CR Gift AWD GUP',        
+        'desc': 'CR Gift AWD GUP',
+        'function': add_imputed_income        
     },
     'Imputed Income -': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_IMPUTED'],
@@ -395,6 +408,10 @@ ACCOUNTS = {
     'InLieu of Notice': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
         'desc': 'InLieu of Notice',
+    },
+    'Fitness': {
+        'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_FITNESS'],
+        'desc': 'Fitness',
     },
     'Life Insurance - EE': {
         'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_LIFE'],
@@ -416,9 +433,9 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['EXPENSE_TAXES_MEDICARE'],
         'desc': 'Non-EE',
     },
-    'PTO Payout 136.93 81.89': {
+    'PTO Payout': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_PTO'],
-        'desc': 'PTO Payout 136.93 81.89',
+        'desc': 'PTO Payout',
     },
     'ML PP Legal STD': {
         'account': ACCOUNT_PATHS['EXPENSE_AFTERTAX_INSURANCE_LEGAL'],
@@ -434,11 +451,20 @@ ACCOUNTS = {
     },
     'Regular Salary': {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
-        'desc': 'Regular Salary 80.00',
+        'desc': 'Regular Salary',
+    },
+    'Regular Sala': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_REGULAR'],
+        'desc': 'Regular Salary',
     },
     'Restor Match': {
         'account': ACCOUNT_PATHS['ASSET_DCP_RESTOR'],
         'desc': 'Match',
+        'function': match_restor
+    },
+    'DCP ER Match': {
+        'account': ACCOUNT_PATHS['ASSET_DCP_RESTOR'],
+        'desc': 'ER Match',
         'function': match_restor
     },
     'Stock Tax True Up': {
@@ -503,6 +529,26 @@ ACCOUNTS = {
         'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
         'desc': 'Service Award Gross Up',
         'function': add_imputed_income
+    },
+    'Birthday Day Off': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_BIRTHDAY'],
+        'desc': 'Birthday Day Off',
+    },
+    'Jury Duty Pay': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_JURYDUTY'],
+        'desc': 'Jury Duty Pay',
+    },
+    'Net Pay Replace': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'Net Pay Replace',
+    },
+    'Def Comp Pay': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'Def Comp Pay',
+    },
+    'NQDCP Rpt Cur YR': {
+        'account': ACCOUNT_PATHS['INCOME_TAXABLE_MISC'],
+        'desc': 'NQDCP Rpt Cur YR',
     }
 }
 
@@ -934,14 +980,6 @@ def parse_file(file_path):
     return all_data
 
 
-def extract(filepath):
-    data = parse_file(filepath)
-    json_filepath = filepath[:-4] + ".json"
-    with open(json_filepath, "w") as f:
-        json.dump(data, f, indent=2)
-    return json_filepath
-
-
 def search_properties(desc):
     for account in SEARCH_ACCOUNTS:
         if re.search(account["pattern"], desc):
@@ -953,14 +991,80 @@ def is_quota_subject(item):
 def ignored(item):
     return 'desc' in item and item['desc'] in ['San Jose']
 
-def process(file_path, book, registry):
-    """Process a JSON file and create GnuCash transactions"""
-    date = parse_date_from_file_name(file_path)
+def extract(filepath, output_dir=None):
+    """Extract PDF to JSON
+
+    Args:
+        filepath: Path to the PDF file
+        output_dir: Optional output directory for JSON
+
+    Returns:
+        Path to the created JSON file
+    """
+    data = parse_file(filepath)
+
+    if output_dir:
+        # Extract just the filename and place in output directory
+        filename = os.path.basename(filepath)
+        json_filepath = os.path.join(output_dir, filename[:-4] + ".json")
+    else:
+        # Place JSON in same directory as PDF
+        json_filepath = filepath[:-4] + ".json"
+
+    with open(json_filepath, "w") as f:
+        json.dump(data, f, indent=2)
+    return json_filepath
+
+def process(file_path, book, registry, source_pdf_path=None):
+    """Process a JSON file and create GnuCash transactions
+
+    Args:
+        file_path: Path to the JSON file
+        book: GnuCash book object
+        registry: Account registry
+        source_pdf_path: Optional path to the source PDF file (for errata lookup)
+    """
     with open(file_path, "r") as f:
         data = json.load(f)
 
+    # Parse date from filename
+    date = parse_date_from_file_name(file_path)
+
+    # Check for errata file alongside the source PDF
+    errata_path = None
+    if source_pdf_path:
+        # Look for errata file in the same directory as the PDF
+        basename = os.path.basename(source_pdf_path)
+        dirname = os.path.dirname(source_pdf_path)
+
+        if 'Statement for' in basename:
+            errata_name = basename.replace('.pdf', '.json').replace('Statement for', 'Errata for')
+        elif 'Payslip' in basename:
+            errata_name = basename.replace('.pdf', '.json').replace('Payslip', 'Errata')
+        else:
+            errata_name = None
+
+        if errata_name:
+            errata_path = os.path.join(dirname, errata_name) if dirname else errata_name
+
+    errata_items = []
+    if errata_path and os.path.exists(errata_path):
+        print(f"Loading errata from {errata_path}")
+        with open(errata_path, "r") as f:
+            errata_data = json.load(f)
+            # Validate and collect errata items
+            for item in errata_data:
+                if isinstance(item, dict) and 'desc' in item and 'cur' in item:
+                    errata_items.append(item)
+                else:
+                    print(f"Warning: Invalid errata item (missing 'desc' or 'cur'): {item}")
+
     current = [item for sublist in data for item in sublist if not ignored(item) and ("cur" in item or is_quota_subject(item))]
 
+    # Merge errata items
+    current.extend(errata_items)
+
+    unknown_accounts = []
     deferred_functions = []
     groups = { 'earnings': [] }
     for item in current:
@@ -974,7 +1078,10 @@ def process(file_path, book, registry):
             if ret is not None:
                 deferred_functions.append(ret)
         else:
-            print("Unknown account", desc)
+            unknown_accounts.append(desc)
+
+    if len(unknown_accounts) > 0:
+        raise ValueError(f"Unknown accounts: {', '.join(unknown_accounts)}")
 
     for func in deferred_functions:
         func()
@@ -1060,34 +1167,33 @@ def main():
     parser.add_argument('--init', action='store_true', help='Create/recreate GnuCash file with accounts before loading')
     parser.add_argument('--clean', action='store_true', help='Delete generated JSON files after successful load')
     parser.add_argument('--force', '-f', action='store_true', help='[Deprecated] Force operations without confirmation')
-    parser.add_argument('--preprocess-only', action='store_true', help='Only preprocess PDFs to JSON without loading')
+    parser.add_argument('--skip', action='append', help='Skip files matching this pattern (can be used multiple times)')
+    parser.add_argument('--output-dir', '-o', help='Output directory for preprocessed JSON files (default: <input_dir>/json)')
 
     args = parser.parse_args()
 
-    # Handle --preprocess-only flag (standalone operation)
-    if args.preprocess_only:
-        if not args.path:
-            print("Error: path argument is required with --preprocess-only")
-            parser.print_help()
-            return
+    # Helper function to check if a file should be skipped
+    def should_skip(filename):
+        if not args.skip:
+            return False
+        for pattern in args.skip:
+            if pattern in filename:
+                return True
+        return False
 
-        if os.path.isdir(args.path):
-            for file in sorted(os.listdir(args.path)):
-                if file.endswith(".pdf"):
-                    file_path = os.path.join(args.path, file)
-                    print(f"Processing {file_path}...")
-                    json_filepath = extract(file_path)
-                    print(f"Created {json_filepath}")
-        elif os.path.isfile(args.path):
-            if args.path.endswith(".pdf"):
-                print(f"Processing {args.path}...")
-                json_filepath = extract(args.path)
-                print(f"Created {json_filepath}")
-            else:
-                print(f"Error: {args.path} is not a PDF file")
+    # Determine output directory for JSON files
+    output_dir = None
+    if args.path and os.path.isdir(args.path):
+        # For directory input, use --output-dir if specified, otherwise create 'json' subdirectory
+        if args.output_dir:
+            output_dir = args.output_dir
         else:
-            print(f"Error: {args.path} is not a valid path")
-        return
+            output_dir = os.path.join(args.path, 'json')
+
+        # Create output directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Created output directory: {output_dir}")
 
     # Validate path argument for load operations
     if not args.path:
@@ -1118,39 +1224,38 @@ def main():
     try:
         registry.load_from_book(book)
 
-        files_to_process = []
-
         if os.path.isdir(args.path):
             # Process directory - handle both PDFs and JSONs
             for file in sorted(os.listdir(args.path)):
+                if should_skip(file):
+                    print(f"Skipping {file}")
+                    continue
+
                 file_path = os.path.join(args.path, file)
                 if file.endswith(".pdf"):
-                    # Preprocess PDF to JSON
+                    # Extract PDF to JSON and immediately load it
                     print(f"Preprocessing {file_path}...")
-                    json_filepath = extract(file_path)
-                    print(f"Created {json_filepath}")
-                    files_to_process.append(json_filepath)
+                    json_filepath = extract(file_path, output_dir)
                     created_json_files.append(json_filepath)
-                elif file.endswith(".json"):
-                    files_to_process.append(file_path)
-
-            # Load all JSON files
-            for json_path in files_to_process:
-                print(f"Loading {json_path}...")
-                process(json_path, book, registry)
+                    print(f"Loading {json_filepath}...")
+                    process(json_filepath, book, registry, source_pdf_path=file_path)
 
         elif os.path.isfile(args.path):
             if args.path.endswith(".pdf"):
-                # Preprocess single PDF to JSON
+                # Extract single PDF to JSON (in same directory) and immediately load it
                 print(f"Preprocessing {args.path}...")
-                json_filepath = extract(args.path)
-                print(f"Created {json_filepath}")
+                json_filepath = extract(args.path)  # No output_dir for single file
                 created_json_files.append(json_filepath)
                 print(f"Loading {json_filepath}...")
-                process(json_filepath, book, registry)
+                process(json_filepath, book, registry, source_pdf_path=args.path)
             elif args.path.endswith(".json"):
+                # Process JSON file directly
                 print(f"Loading {args.path}...")
-                process(args.path, book, registry)
+                # Try to infer PDF path from JSON path
+                pdf_path = args.path.replace('.json', '.pdf')
+                if not os.path.exists(pdf_path):
+                    pdf_path = None
+                process(args.path, book, registry, source_pdf_path=pdf_path)
             else:
                 print(f"Error: {args.path} is not a PDF or JSON file")
         else:
